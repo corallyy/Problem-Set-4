@@ -1,0 +1,537 @@
+---
+title: "Predict U.S Election Results By Logistic Regression Model"
+author:
+  - Yingyu Li
+  - Chenxuan Ding
+  - Jialu Xu
+  - Yilin Wang
+date: "02/11/2020"
+output: pdf_document
+fontsize: 12pt
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+\begin{abstract}
+In this project, main topic is about prediction on U.S election results, which will be released on Tuesday, November 3, 2020. Logistic Regression model will be fitted based on survey data from [Nationscape] and then apply fitted Logistic Regression model on Post-Stratification data from [IPUMS]. At the same time, some important data properties will be presented for both survey data and Post-Stratification data. Finally, prediction will be shown that Biden will have larger probability than Trump to become the next U.S president.  
+\end{abstract} \hspace{10pt}
+
+### Keywords: Trump, Biden, Survey, Logistic Regression Model, Model Diagnostics, Post-Stratification, Election, Age, Gender, Education, Employment, Household Income, Census Region. 
+
+\section{1. Introduction}
+
+U.S election is one of the hottest topics recently in the world especially in North America. U.S election's results will be released on the Tuesday, November 3, 2020. Before revealing U.S election results to public, we would like to do a prediction on the U.S election. Currently, there are two president candidates have the highest votes, **Donald Trump** and **Joe Biden**. As a result, in this project, we are going to do prediction between these two candidates. In this report, we will do a deep investigation from three perspectives: _modeling data description_, _regression model selection_ and _prediction_. And finally, we will also make conclusions from these three perspectives. At the same time, we will identify weaknesses of our methods and corresponding Next Steps.  
+
+
+\section{2. Data Descriptions}
+
+Main target of this project is to predict election results between **Donald Trump** and **Joe Biden**. Hence, we denote **Donald Trump** by '**1**' and **Joe Biden** by '**0**' in all data sets for modeling convenience.  
+
+_Survey data_ is collected from [**Nationscape**](https://www.voterstudygroup.org/publication/nationscape-data-set) and _post-stratification data_ from [**IPUMS**](https://usa.ipums.org/usa/index.shtml). Both of them need to be registered and take few days to get data sets. Full survey data sets are downloaded from [**Nationscape**](https://www.voterstudygroup.org/publication/nationscape-data-set) but only the latest data set (**June 25, 2020**) will be used. 2018 1-year ACS are selected, in order to reduce size of data set, 24 variables and 600k records are downloaded from [**IPUMS**](https://usa.ipums.org/usa/index.shtml). These two data sets will be analyzed separately and shown in the results Section.  
+
+
+```{r Survey Data Cleaning,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+# In this section, we are going to do further data cleaning and variable classification based on 01-data_cleaning-survey.r provided in the problem set 4 instruction module.
+
+#### Workspace setup ####
+library(haven)
+library(tidyverse)
+# Read in the raw data (You might need to change this if you use a different dataset)
+raw_data <- read_dta("inputs/ns20200625/ns20200625.dta")
+# Add the labels
+raw_data <- labelled::to_factor(raw_data)
+# Just keep some variables
+reduced_data <- 
+  raw_data %>% 
+  select(interest,
+         registration,
+         vote_2016,
+         vote_intention,
+         vote_2020,
+         ideo5,
+         employment,
+         foreign_born,
+         gender,
+         census_region,
+         hispanic,
+         race_ethnicity,
+         household_income,
+         education,
+         state,
+         congress_district,
+         age)
+
+
+reduced_data <- 
+  reduced_data %>% filter(vote_2020 %in% c("Donald Trump", "Joe Biden")) %>%
+  mutate(
+    education = case_when(
+      education %in% 
+        c("High school graduate", 
+          "Middle School - Grades 4 - 8", 
+          "Completed some high school",
+          "Other post high school vocational training") ~ "High-School", 
+      education %in% c("Associate Degree", 
+                       "College Degree (such as B.A., B.S.)", 
+                       "Completed some college, but no degree","Masters degree", 
+                       "Completed some graduate, but no degree", 
+                       "Doctorate degree") ~ "College or Above"
+    ),
+    
+    race_ethnicity = case_when(
+      race_ethnicity == "White" ~ "White",
+      race_ethnicity %in% c("Asian (Asian Indian)", "Asian (Vietnamese)",
+                         "Asian (Chinese)","Asian (Korean)", "Asian (Japanese)",
+                         "Asian (Filipino)", "Asian (Other)") ~ "Asian",
+      
+      race_ethnicity %in% c("Pacific Islander (Native Hawaiian)",
+                          "Pacific Islander (Other)",
+                          "Pacific Islander (Samoan)",
+                          "Pacific Islander (Guamanian)") ~ "Pacific",
+      race_ethnicity %in% c("Black, or African American",
+                          "Some other race",
+                          "American Indian or Alaska Native") ~ "Others"
+      
+      ),
+    
+    employment = case_when(
+      employment %in% c("Full-time employed", "Part-time employed",
+                        "Self-employed", "Homemaker") ~ "Employed",
+      employment %in% c("Unemployed or temporarily on layoff",
+                        "Retired","Student",
+                        "Permanently disabled",
+                        "Other:", "NA") ~ "Unemployed"),
+    
+    vote_trump = ifelse(vote_2020=="Donald Trump", 1, 0),
+    
+    vote_2016 = ifelse(vote_2016=="Donald Trump", "Vote Trump", "Vote Others"),
+    
+    vote_intention = ifelse(vote_intention == "Yes, I will vote", "Yes", "No"),
+      
+    household_income = ifelse(
+      household_income %in% c("Less than $14,999", "$15,000 to $19,999", 
+                              "$20,000 to $24,999", "$25,000 to $29,999",
+                              "$30,000 to $34,999", "$35,000 to $39,999",
+                              "$40,000 to $44,999", "$45,000 to $49,999",
+                              "NA"),
+      "Below $50,000", "Above $50,000"),
+    
+    
+    )  %>% 
+  select(vote_trump, gender, age, census_region, household_income, education,
+         employment) %>% na.omit()
+
+reduced_data$vote_trump <- as.factor(reduced_data$vote_trump)
+```
+
+```{r Post-stratified Data Cleaning,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+library(haven)
+library(tidyverse)
+
+raw_data_p <- read_dta("inputs/usa_00002.dta")
+# Add the labels
+raw_data_p <- labelled::to_factor(raw_data_p)
+# Just keep some variables
+reduced_data_p <- 
+  raw_data_p %>% 
+  select(sex,
+         age,
+         educ,
+         region,
+         labforce,
+         inctot) %>%
+  mutate(
+    gender = ifelse(sex == "male", "Male", "Female"),
+    education = case_when(
+      educ %in% 
+        c("grade 12", "grade 5, 6, 7, or 8", "grade 9",
+          "grade 10", "grade 11", "n/a or no schooling") ~ "High-School", 
+      educ %in% c("1 year of college","2 years of college","4 years of college",
+                  "5+ years of college",
+                  "nursery school to grade 4") ~ "College or Above"),
+    
+    census_region = case_when(
+      region %in% 
+        c("new england division", "middle atlantic division") ~ "Northeast", 
+      region %in% c("east north central div",
+                    "west north central div") ~ "Midwest",
+      region %in% c("south atlantic division","west south central div",
+                    "east south central div") ~ "South",
+      region %in% c("mountain division","pacific division") ~ "West"
+      ), 
+    
+    employment = ifelse(labforce == "yes, in the labor force", 
+                        "Employed", "Unemployed"),
+    
+    
+    household_income = ifelse(inctot < 50000, "Below $50,000", "Above $50,000")) %>%
+  select(gender,
+         age,
+         education,
+         census_region,
+         employment,
+         household_income)
+
+```
+
+
+
+
+\section{3. Model}
+
+In this big section, Logistic Regression model will be chosen to fit Survey data set and then predicting U.S election results by using Post-stratification data. Next, this section will be divided into two parts by explaining what/why Logistic Regression model, how to use Logistic Regression model.
+
+
+
+\subsection{3.1 Logistic Regression Model}
+
+_Logistic Regression Model_ is a appropriate regression analysis to conduct when the dependent variable is binary, for example, probability of win and loss or probability of pass and fail. Linear regression can also be applied to binary dependent variable, but it is hard to interpret.  
+
+Logistic Regression can use _logit_ function with the following expression, because log odds have a range $(-\infty,+\infty)$.  
+
+\begin{equation}
+    log(\frac{p}{1-p})=\beta_0+\beta_1X_1+\beta_2X_2+...+\beta_nX_n
+\end{equation}  
+
+Also, Logistic Regression can use _probit_ function with the following expression, because inverse of Normal Cumulative Distribution Function ($\varphi^{-1}(x)$) has a range $(-\infty,+\infty)$.  
+
+\begin{equation}
+    \varphi^{-1}(p)=\beta_0+\beta_1X_1+\beta_2X_2+...+\beta_nX_n
+\end{equation}  
+
+In this project, Logistic Regression Model with Probit function will be used for prediction U.S Election results.
+
+
+```{r Logistic Regression,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+x <- seq(-10, 10, 0.1)
+a <- 0.5; b <- 1
+logit <- exp(a + b*x)/(1 + exp(a + b*x))
+probit <- pnorm(a + b*x)
+
+par(mar = c(3, 3, 3, 3))
+plot(x, logit, type = 'l', col = 'red', ylab = expression(p(x)), main = 'Logistic Regression of Probit and Logit Function')
+lines(x, probit, col = 'blue')
+legend('topleft', c("logit", "Probit"), lty = 1, col = c('red', 'blue'), cex = 1.2, bty = 'n')
+
+
+```
+
+
+
+\subsection{3.2 Modeling Survey Data Set}
+
+When fitting a Logistic Regression model, there are several items need to be considered before hand:  
+
+  * Variable Selection: At the beginning, six predictors are selected from Survey data set for predicting election results. However, these six predictors are not necessary significant. Hence, Forward Stepwise model selection method will be used to select a model with the largest Akaike information criterion number. From the following table, one can find that all six variables are selected to fit logistic regression model.
+  
+```{r Variable Selection,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+fit1 <- glm(as.factor(vote_trump) ~ ., family=binomial(link=logit),
+           data = reduced_data)
+
+AIC <- step(fit1, trace = 0, k = 2, direction = "forward") 
+data.frame(Attributes = attr(terms(AIC), "term.labels")) %>%
+  knitr::kable(caption = "Attributes that selected by Akaike information criterion")
+```
+  
+  * Model Accuracy Check: After fitting Logistic Regression model by using all these six predictors. The next step is doing model diagnostics by checking residual plot against fitted probability. Firstly, original survey data set is divided into 20 different groups, each group has around 250 records. Within each group, real probability that vote trump is calculated, real probability that vote trump is obtained by Logistic Regression model. From the following plot, one can observe that predicted probability is not far away from real probability, that mean the model can be used for the upcoming election results.  
+  
+  
+```{r Model Diagnostics,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+reduced_data.p <- mutate(reduced_data,residuals=residuals(fit1),
+                  linpred=predict(fit1),
+                  predprob=predict(fit1,type='response'))
+
+reduced_data.a <- group_by(reduced_data.p, ntile(linpred,20))
+
+reduced_data.b <- summarise(reduced_data.a,y=sum(vote_trump==1),
+ppred=mean(predprob),count=n())
+
+ggplot(reduced_data.b,aes(x=ppred,y=y/count))+geom_point()+
+geom_abline(intercept=0,slope=1, col = "red")+labs(x="Predicted Probability", 
+y="Real Probability", 
+title = 'Predicted Probability vs Observed Probability For Voting Trump') + 
+  theme_bw()
+
+```
+
+
+\newpage
+
+
+\section{4. Results}
+
+In this section, data and model results will be shown. The first sub-section is about data analysis results for Survey data, the second sub-section is about data analysis results for Post-Stratification data, and the last section is about prediction results by using Logistic Regression model from Section 3.
+  
+\subsection{4.1 Survey Data Analysis Results}
+
+For survey data, it is cleaned by _01-data_cleaning-survey.r_ module, also, some multi-level variables (e.g. _employment_, _education_ and etc.) are reduced into lower dimensions. There are six predictors ( _gender_, _age_, _census_region_,
+_household_income_, _education_, _employment_) are selected for modeling in order to predict U.S election results. Below are plots regarding to these six variables against actual vote situation from survey data set.
+
+```{r Survey Data Analysis,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE,fig.width=15, fig.height=10}
+library(ggplot2)
+library(gridExtra)
+
+Plot1 <- reduced_data %>% ggplot(aes(x=vote_trump,fill=gender)) +
+  geom_bar( position = position_dodge(preserve = 'single')) + 
+  labs(title = "Plot1: Vote for different gender",y = 'Number of People',x = 'Whether Vote for Trump') + 
+  theme(
+    axis.text.x = element_text(size=20),
+          axis.text.y = element_text(size=20),
+          axis.title = element_text(face="bold", size = 400),
+          axis.title.x = element_text(size = 30),
+          axis.title.y = element_text(size = 30),
+    plot.margin = unit(c(3,3,3,3),"cm")) + theme_classic()
+
+
+Plot2 <- reduced_data %>% ggplot(aes(x=vote_trump, y=age)) +
+  geom_boxplot(aes(color = vote_trump)) +
+  labs(title = "Plot2: Boxplot of Ages",y = 'Number of People',x = 'Whether Vote for Trump') +
+  theme(
+    axis.text.x = element_text(size=20),
+          axis.text.y = element_text(size=20),
+          axis.title = element_text(face="bold", size = 400),
+          axis.title.x = element_text(size = 30),
+          axis.title.y = element_text(size = 30),
+    plot.margin = unit(c(3,3,3,3),"cm")) + theme_classic()
+
+
+Plot3 <- reduced_data %>% ggplot(aes(x=vote_trump,fill=census_region)) +
+  geom_bar( position = position_dodge(preserve = 'single')) + 
+  labs(title = "Plot3: Vote for different census region",y = 'Number of People',x = 'Whether Vote for Trump') + 
+  theme(
+    axis.text.x = element_text(size=20),
+          axis.text.y = element_text(size=20),
+          axis.title = element_text(face="bold", size = 400),
+          axis.title.x = element_text(size = 30),
+          axis.title.y = element_text(size = 30),
+    plot.margin = unit(c(3,3,3,3),"cm")) + theme_classic()
+
+Plot4 <- reduced_data %>% ggplot(aes(x=vote_trump,fill=household_income)) +
+  geom_bar( position = position_dodge(preserve = 'single')) + 
+  labs(title = "Plot4: Vote for different household income",y = 'Number of People',x = 'Whether Vote for Trump') +
+  theme(
+    axis.text.x = element_text(size=20),
+          axis.text.y = element_text(size=20),
+          axis.title = element_text(face="bold", size = 400),
+          axis.title.x = element_text(size = 30),
+          axis.title.y = element_text(size = 30),
+    plot.margin = unit(c(3,3,3,3),"cm")) + theme_classic()
+
+Plot5 <- reduced_data %>% ggplot(aes(x=vote_trump,fill=education)) +
+  geom_bar( position = position_dodge(preserve = 'single')) + 
+  labs(title = "Plot5: Vote for different education",y = 'Number of People',x = 'Whether Vote for Trump') + 
+  theme(
+    axis.text.x = element_text(size=20),
+          axis.text.y = element_text(size=20),
+          axis.title = element_text(face="bold", size = 400),
+          axis.title.x = element_text(size = 30),
+          axis.title.y = element_text(size = 30),
+    plot.margin = unit(c(3,3,3,3),"cm")) + theme_classic()
+
+Plot6 <- reduced_data %>% ggplot(aes(x=vote_trump,fill=employment)) +
+  geom_bar( position = position_dodge(preserve = 'single')) + 
+  labs(title = "Plot6: Vote for different employment",y = 'Number of People',x = 'Whether Vote for Trump') + 
+  theme(
+    axis.text.x = element_text(size=20),
+          axis.text.y = element_text(size=20),
+          axis.title = element_text(face="bold", size = 400),
+          axis.title.x = element_text(size = 30),
+          axis.title.y = element_text(size = 30),
+    plot.margin = unit(c(3,3,3,3),"cm")) + theme_classic()
+
+grid.arrange(Plot1,Plot2,Plot3,Plot4,Plot5,Plot6, ncol = 2)
+
+```
+
+
+From above plots, one can observe that:  
+
+  * Plot1 is number of candidates votes by different genders. More female vote Biden rather than Trump, but more male choose to vote Trump rather than Biden. Both Biden and Trump have around 2500 votes in total.  
+  
+  * Plot2 is boxplot of voting ages. Range of age under 'Biden' is wider than under 'Trump' and median of age under 'Trump' is higher than under 'Biden'.  
+  
+  * Plot3 is number of candidates votes by different census regions. Number of votes from South area is the largest, and Trump get more votes than Biden in the south area. For other regions, Biden gets more votes than Trump.  
+  
+  * Plot4 is number of candidates votes by different household income level, there are lots of income levels in the original survey data set, but it is classified into two levels (Above `$50,000` and Below `$50,000`). In `Below $50,000` category, Biden has obvious advantages, in `Above $50,000` category, Trump has little advantages.
+  
+  * Plot5 is number of candidates votes by different education level. People who receive college or above education give more votes to Biden. 
+  
+  * Plot6 is number of candidates votes by different employment status. In both 'Employed' and 'Unemployed', Biden has more votes. 
+  
+  
+
+\subsection{4.2 Post-stratification Data Analysis Results}
+
+For Post-stratification data, it is cleaned by _01-data_cleaning-post-strat.r_ module. In addition, Post-stratification data will be used for doing real prediction, as a result, its format need to be re-organized to keep consistent with Survey data set. Below are summary tables about selected predictors. 
+
+
+```{r Post-stratified Data Analysis,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+library(scales)
+
+reduced_data_p %>% group_by(gender) %>% 
+  summarise(Count = n(), Proportion = n() / nrow(reduced_data_p)) %>%
+  arrange(desc(Count)) %>% knitr::kable(caption = "Genders distribution in Census data")
+
+reduced_data_p %>% group_by(education) %>% 
+  summarise(Count = n(), Proportion = n() / nrow(reduced_data_p)) %>%
+  arrange(desc(Count)) %>% knitr::kable(caption = "Education distribution in Census data")
+
+reduced_data_p %>% group_by(census_region) %>% 
+  summarise(Count = n(), Proportion = n() / nrow(reduced_data_p)) %>%
+  arrange(desc(Count)) %>% knitr::kable(caption = "Region distribution in Census data")
+
+reduced_data_p %>% group_by(employment) %>% 
+  summarise(Count = n(), Proportion = n() / nrow(reduced_data_p)) %>%
+  arrange(desc(Count)) %>% knitr::kable(caption = "Employment distribution in Census data")
+
+reduced_data_p %>% group_by(household_income) %>% 
+  summarise(Count = n(), Proportion = n() / nrow(reduced_data_p)) %>%
+  arrange(desc(Count)) %>% knitr::kable(caption = "Household Income distribution in Census data")
+
+
+```
+
+From Above table, one can observe some properties in the Post-Stratification data set:  
+
+
+  * Female and Male are equally distributed in the Post-Stratification data set.  
+  
+  * People with College or above education and High School education are equally distributed in the Post-Stratification data set.
+  
+  * About 37.5% people in Post-Stratification data set comes from South area, which is the most. And about 17.5% people in Post-Stratification data set comes from Northeast area, which is the lease.  
+  
+  * People with employed status and unemployed status are equally distributed in the Post-Stratification data set.  
+  
+  * Most people's household annual incomes (around 60%) are less than `$50,000` in the Post-Stratification data set. 
+
+
+\newpage
+
+
+\subsection{4.3 Model and Prediction Results}
+
+Below is estimated parameters for fitted logistic regression model. 
+
+```{r Model Results,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+data.frame(fit1$coefficients) %>% knitr::kable(caption = "Estimated Model Parameters")
+
+```
+
+
+For Post-stratification, formula to Use demographics to “extrapolate” how entire population will vote is:
+
+$$\hat{Y^{ps}} = \frac{\sum{N_j\hat{Y_j}}}{\sum{N_j}}$$
+Where $\hat{Y_j}$ is the estimate probability in the $j^{th}$ cell and $N_j$ is the population size of the $j^{th}$ cell.  
+
+```{r Prediction Results,eval = TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+reduced_data_p$age <- as.integer(reduced_data_p$age,type='response')
+
+census <- reduced_data_p %>% 
+  group_by(gender, age, education, census_region,
+          employment,household_income) %>% 
+  summarise(N = n())
+
+census$estimate <-
+  fit1 %>%
+  predict(newdata = census, type='response')
+
+census$Numerator <- census$estimate * census$N
+census$Denominator <- census$N
+
+P <- sum(census$Numerator) / sum(census$Denominator)
+
+data.frame(Candidates = c("Trump", "Biden"),
+                               Probability = c(percent(P), percent(1-P))) %>%
+  knitr::kable(caption = "Winning Probability for Trump and Biden")
+
+
+
+```
+
+Table 8 is winning probability for "Donald Trump" and "Joe Biden". Based on the Logistic Regression model in this project. Trump has less winning probability than Biden.  
+
+
+\newpage
+
+
+\section{5. Discussion}
+
+In the project, the main target is to predict U.S election results by using the latest Post-stratification data set. People can find many efforts including data preparation, data analytic, model fitting and etc. Next is a summary about what this project did:  
+
+  1. Register Democracy Fund + UCLA , and access _full survey data set_ from there. Similarly, Register IPUMS, and access _American Community Survey (ACS) data set_ after selection few interesting variables.  
+  
+  2. Do data cleaning and variable classification for both Survey data set and Post-stratification data set.  
+  
+  3. Present data analysis results and properties for both Survey data set and Post-stratification data set.  
+  
+  4. Select appropriate _logistic regression model_ to fit Survey data set. In order to make sure _logistic regression model_ is accurate, Akaike information criterion is applied to select most significant variables. In addition, comparison between real vote probability and predicted probability are made.  
+  
+  5. Use fitted _logistic regression model_ and _Post-stratification_ method to predict U.S election results.  
+  
+  
+All procedures and results are described in detail in the main body of the project. After doing all above steps, one can conclude that fitted _logistic regression model_ is accurate to predict U.S and election results. Moreover, from prediction results, Trump (46%) has less winning probability than Biden (54%).  
+
+
+\subsection{5.1 Weaknesses}
+
+However, when we are doing this project, we also identified some weaknesses that may impact U.S prediction results. Because of project words limitation, it will be notified here and next step solutions will also be provided.  
+
+  * At the beginning, predictors are selected for our own interests instead of using a quantitative way. So, some important variables may impact votes may be ignored that cause less accurate prediction results.  
+  
+  * When fitting _logistic regression model_, model diagnostics are not enough. Since the focus of this project is not logistic regression model, When checking the accuracy of _logistic regression model_, only two items are diagnosed.  
+  
+  * Backtesting should be processed for logistic regression model: usually, in order to make sure model accuracy, statisticians divide _data set_ into _Training data set (used for modeling)_ and _testing data set (used for testing)_. But in this project, model is not tested by testing data set.  
+  
+
+\subsection{5.2 Next Steps}
+
+After identifying weaknesses of this project, next will be the list of corresponding _Next Steps_ for future works.  
+
+  * All variables (except identification variables) should be used to fit _logistic regression model_, and then use some statistical methods (e.g stepwise) to pick up most significant variables.  
+  
+  * More model diagnostics should be processed in order to make sure _logistic regression model_ is a real fit in this case. If model assumptions are violated, then use other more accurate models instead. 
+  
+  * Divide _Survey Data Set_ into _Training_ and _Testing_. Training data set is used for model fitting, testing data set is used for model testing. If model predictions on testing data set have large difference than observations in testing data set, that means prediction can not be accurate when predicting Post-Stratification data set. Then we need to reconsider model.  
+  
+Finally, there are no 100% accurate models in the world. Every statistical model has some biases than the real world. However, people is able to optimizing models and try to control biases in an acceptable range.  
+
+Also, based on the prediction results in this report, Biden has more chances to win the election to be the next U.S president. However, Trump and Biden probabilities have no huge differences, Trump still has big chance to win. 
+  
+  
+\newpage
+
+  
+\section{Reference} 
+
+Wu, Thompson, Changbao. 2020. "Sampling Theory and Practice. Springer International Publishing."  
+
+Tausanovitch, Chris, and Lynn Vavreck. 2020. “Democracy Fund + UCLA Nationscape” https://www.voterstudygroup.org/publication/nationscape-data-set.  
+
+Voter Study Group. 2020. "Democracy Fund + UCLA Nationscape User Guide."  
+
+Steven Ruggles, Ronald Goeken, Sarah Flood, and Matthew Sobek. 2020. “IPUMS USA: Version 10.0” https://doi.org/10.18128/D010.V10.0.  
+
+
+Daniel Jurafsky & James H. Martin. 2019 "Speech and Language Processing, Chapter 5, Logistic Regression."  
+
+Hamed Taherdoost. 2016 "Sampling Methods in Research Methodology, How to Choose a Sampling Technique for Research. "  
+
+
+
+
+
+
+
